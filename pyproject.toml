@@ -7,10 +7,11 @@ name = "yahoo-finance-mcp"
 version = "0.1.0"
 description = "MCP server implementation for yahoo finance integration"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "mcp[cli]>=2.0.0a1,<3",
     "yfinance>=0.2.62",
+    "uvicorn[standard]>=0.30.0",
 ]
 
 #: setup script entry point (server.py)

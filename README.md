@@ -77,12 +77,12 @@ With this MCP server, you can use Claude to:
 
 ## Requirements
 
-- Python 3.11 or higher
+- Python 3.12 or higher (required by Vercel runtime)
 - Dependencies as listed in `pyproject.toml`, including:
   - mcp
   - yfinance
   - pandas
-  - pydantic
+  - uvicorn
   - and other packages for data processing
 
 ## Setup
@@ -108,38 +108,122 @@ uvx --from git+https://github.com/Alex2Yang97/yahoo-finance-mcp yahoo-finance-mc
    uv venv
    source .venv/bin/activate  # On Windows: .venv\Scripts\activate
    uv pip install -e .
+   uv pip install -e backend/
    ```
 
-## Running on v0.app / Vercel (Streamable HTTP)
+## Running on Vercel (Streamable HTTP)
 
-In addition to the local stdio transport, this server can run as a remote MCP
-server over **Streamable HTTP**, which is what [v0.app](https://v0.app) and
-Vercel use. This makes the server reachable over the network so MCP clients
-(including the MCP Inspector) can connect to a hosted URL.
+This server can run as a remote MCP server over **Streamable HTTP**,
+making it reachable over the network so MCP clients (Claude Desktop, MCP Inspector, etc.)
+can connect to a hosted URL.
 
 ### How it works
 
-- `backend/main.py` re-exports the same `yfinance` FastMCP server, but exposes it
-  as an ASGI app via `FastMCP(..., stateless_http=True).streamable_http_app()`.
+- `backend/main.py` exposes a `MCPServer` as an ASGI app via
+  `MCPServer(...).streamable_http_app(stateless_http=True)`.
   `stateless_http=True` is required for serverless platforms because each
   request must be self-contained (no in-memory session that survives between
   invocations or cold starts).
 - `vercel.json` declares a Python service using Vercel's `experimentalServices`
   API. The service mounts `backend/main.py` under the `/api` route prefix.
-  Vercel strips that prefix before forwarding to the app, and FastMCP serves the
-  Streamable HTTP transport at `/mcp`, so the **public MCP endpoint** is:
+  Vercel strips that prefix before forwarding to the app, so the **public MCP endpoint** is:
 
   ```
   https://<your-deployment>.vercel.app/api/mcp
   ```
 
-### Deploy
+### Authentication (optional)
 
-1. Open / fork this project in [v0.app](https://v0.app), or import the repo into
-   Vercel.
-2. Deploy. If you import directly into Vercel and see a 404, set the
-   **Framework Preset** to `Services` (Settings → Build and Deployment).
-3. After deploying, your MCP endpoint is available at `https://<your-deployment>.vercel.app/api/mcp`.
+The server supports Bearer token authentication via the `YF_API_KEY` environment variable.
+When set, every request must include an `Authorization: Bearer <token>` header matching
+the value of `YF_API_KEY`. If unset, authentication is disabled (useful for local dev).
+
+Set it in Vercel:
+
+```bash
+vercel env add YF_API_KEY production
+```
+
+Or via the **Vercel Dashboard → Settings → Environment Variables**.
+
+### Local testing with `vercel dev`
+
+1. **Set Python version to >= 3.12** (required by Vercel runtime):
+
+   ```bash
+   uv python pin 3.14
+   ```
+
+2. **Run the dev server:**
+
+   ```bash
+   vercel dev
+   ```
+
+   This starts a local dev server at `http://localhost:3000/api/mcp`.
+
+3. **Test the endpoint:**
+
+   With auth enabled:
+   ```bash
+   YF_API_KEY="my-secret" vercel dev
+   ```
+   ```bash
+   curl -X POST http://localhost:3000/api/mcp \
+     -H "Content-Type: application/json" \
+     -H "Authorization: Bearer my-secret" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+   ```
+
+   Without auth (YF_API_KEY not set):
+   ```bash
+   curl -X POST http://localhost:3000/api/mcp \
+     -H "Content-Type: application/json" \
+     -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+   ```
+
+### Local testing with uvicorn (direct, no Vercel)
+
+```bash
+uv run uvicorn backend.main:app --host 0.0.0.0 --port 8001
+```
+
+Test:
+```bash
+curl -X POST http://localhost:8001/mcp \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
+### Deploy to Vercel
+
+1. **Import the repo** into Vercel, or deploy from the CLI:
+   ```bash
+   vercel --prod
+   ```
+
+2. **Set the Framework Preset** to `Services` (Vercel Dashboard → Settings → Build and Deployment).
+
+3. **Set the `YF_API_KEY` environment variable** (recommended):
+   ```bash
+   vercel env add YF_API_KEY production
+   ```
+
+4. **Redeploy** after setting the env var:
+   ```bash
+   vercel --prod
+   ```
+
+5. Your MCP endpoint is available at `https://<your-deployment>.vercel.app/api/mcp`.
+
+### Smoke-test the deployed endpoint
+
+```bash
+curl -X POST https://<your-deployment>.vercel.app/api/mcp \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-api-key>" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
 
 ## Connecting from the MCP Inspector
 
@@ -160,21 +244,15 @@ You can test the hosted server with the official
 
    (When testing locally with `vercel dev`, use `http://localhost:3000/api/mcp`.)
 
-3. Click **Connect**, then open the **Tools** tab and click **List Tools**. You
+3. If you have authentication enabled, add a **Custom Header**:
+   - **Header**: `Authorization: Bearer <your-api-key>`
+
+4. Click **Connect**, then open the **Tools** tab and click **List Tools**. You
    should see all nine tools (`get_historical_stock_prices`, `get_stock_info`,
    `get_yahoo_finance_news`, `get_stock_actions`, `get_financial_statement`,
    `get_holder_info`, `get_option_expiration_dates`, `get_option_chain`,
    `get_recommendations`). Select one (e.g. `get_stock_info` with
    `ticker = AAPL`) and click **Run Tool** to verify a response.
-
-You can also smoke-test the endpoint from the command line:
-
-```bash
-curl -X POST https://<your-deployment>.vercel.app/api/mcp \
-  -H "Content-Type: application/json" \
-  -H "Accept: application/json, text/event-stream" \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
-```
 
 ## Usage
 

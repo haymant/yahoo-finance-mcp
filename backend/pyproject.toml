@@ -2,9 +2,9 @@
 name = "yahoo-finance-mcp-backend"
 version = "0.1.0"
 description = "Yahoo Finance MCP server exposed over Streamable HTTP"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    "mcp[cli]>=1.6.0",
+    "mcp>=2.0.0a1,<3",
     "yfinance>=0.2.62",
     "pandas>=2.0.0",
     "starlette>=0.37.0",

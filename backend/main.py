@@ -4,8 +4,47 @@ from enum import Enum
 
 import pandas as pd
 import yfinance as yf
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
+from mcp.server.transport_security import TransportSecuritySettings
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import PlainTextResponse
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+
+# ---------------------------------------------------------------------------
+# Bearer token auth middleware
+# ---------------------------------------------------------------------------
+class BearerAuthMiddleware:
+    """Reject requests whose Authorization: Bearer token does not match
+    the YF_API_KEY environment variable.  When YF_API_KEY is unset or empty
+    the middleware is a no-op (useful for local dev)."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        api_key = os.environ.get("YF_API_KEY", "")
+        if api_key:
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+
+            # Let CORS preflight (OPTIONS) pass through unauthenticated.
+            if scope.get("method", "").upper() == "OPTIONS":
+                await self.app(scope, receive, send)
+                return
+
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+
+            if not auth_header.startswith("Bearer ") or auth_header[7:] != api_key:
+                response = PlainTextResponse(
+                    "Forbidden: invalid or missing API key", status_code=403
+                )
+                await response(scope, receive, send)
+                return
+
+        await self.app(scope, receive, send)
 
 
 # Define an enum for the type of financial statement
@@ -32,20 +71,16 @@ class RecommendationType(str, Enum):
     upgrades_downgrades = "upgrades_downgrades"
 
 
-# Initialize FastMCP server.
+# Initialize MCPServer.
 #
 # When this module is served by Vercel's `experimentalServices` runtime the
 # service is mounted under the `routePrefix` defined in `vercel.json` (`/api`),
 # and Vercel strips that prefix before forwarding the request to this app. The
-# Streamable HTTP transport itself is exposed at `/mcp` (FastMCP's default), so
-# the public endpoint becomes `https://<deployment>/api/mcp`.
-#
-# `stateless_http=True` is required for serverless environments: each request
-# is self-contained, so the server does not need to keep an in-memory session
-# alive between invocations / across cold starts.
-yfinance_server = FastMCP(
+# Streamable HTTP transport itself is exposed at `/api/mcp` (set via
+# `streamable_http_path` in `streamable_http_app()` below), so the public
+# endpoint becomes `https://<deployment>/api/mcp`.
+yfinance_server = MCPServer(
     "yfinance",
-    stateless_http=True,
     instructions="""
 # Yahoo Finance MCP Server
 
@@ -428,12 +463,27 @@ async def get_recommendations(ticker: str, recommendation_type: str, months_back
 # ASGI application exposed over Streamable HTTP.
 #
 # Vercel's Python runtime auto-detects the module-level `app` ASGI callable and
-# serves it. FastMCP builds a Starlette app that handles the MCP protocol over
-# Streamable HTTP at `/mcp`. We add permissive CORS so browser-based clients
-# (such as the MCP Inspector) can reach the endpoint, and expose the
-# `mcp-session-id` header that the transport relies on.
+# serves it. MCPServer builds a Starlette app that handles the MCP protocol over
+# Streamable HTTP at the configured `streamable_http_path`. We add permissive
+# CORS so browser-based clients (such as the MCP Inspector) can reach the
+# endpoint, and expose the `mcp-session-id` header that the transport relies on.
+#
+# `stateless_http=True` is required for serverless environments: each request
+# is self-contained, so the server does not need to keep an in-memory session
+# alive between invocations / across cold starts.
 # ---------------------------------------------------------------------------
-app = yfinance_server.streamable_http_app()
+# Disable DNS rebinding protection — Vercel handles edge security.
+_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False,
+)
+
+app = yfinance_server.streamable_http_app(
+    stateless_http=True,
+    # Default path is "/mcp". When deployed behind Vercel's routePrefix "/api",
+    # the public endpoint becomes <host>/api/mcp.
+    streamable_http_path="/mcp",
+    transport_security=_security,
+)
 
 app.add_middleware(
     CORSMiddleware,
@@ -443,6 +493,9 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["mcp-session-id"],
 )
+
+# Wrap with Bearer token auth (checked against YF_API_KEY env var).
+app = BearerAuthMiddleware(app)  # type: ignore[assignment]
 
 
 def main() -> None:
