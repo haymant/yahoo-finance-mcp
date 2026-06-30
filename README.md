@@ -110,6 +110,72 @@ uvx --from git+https://github.com/Alex2Yang97/yahoo-finance-mcp yahoo-finance-mc
    uv pip install -e .
    ```
 
+## Running on v0.app / Vercel (Streamable HTTP)
+
+In addition to the local stdio transport, this server can run as a remote MCP
+server over **Streamable HTTP**, which is what [v0.app](https://v0.app) and
+Vercel use. This makes the server reachable over the network so MCP clients
+(including the MCP Inspector) can connect to a hosted URL.
+
+### How it works
+
+- `backend/main.py` re-exports the same `yfinance` FastMCP server, but exposes it
+  as an ASGI app via `FastMCP(..., stateless_http=True).streamable_http_app()`.
+  `stateless_http=True` is required for serverless platforms because each
+  request must be self-contained (no in-memory session that survives between
+  invocations or cold starts).
+- `vercel.json` declares a Python service using Vercel's `experimentalServices`
+  API. The service mounts `backend/main.py` under the `/api` route prefix.
+  Vercel strips that prefix before forwarding to the app, and FastMCP serves the
+  Streamable HTTP transport at `/mcp`, so the **public MCP endpoint** is:
+
+  ```
+  https://<your-deployment>.vercel.app/api/mcp
+  ```
+
+### Deploy
+
+1. Open / fork this project in [v0.app](https://v0.app), or import the repo into
+   Vercel.
+2. Deploy. If you import directly into Vercel and see a 404, set the
+   **Framework Preset** to `Services` (Settings → Build and Deployment).
+3. After deploying, your MCP endpoint is available at `https://<your-deployment>.vercel.app/api/mcp`.
+
+## Connecting from the MCP Inspector
+
+You can test the hosted server with the official
+[MCP Inspector](https://github.com/modelcontextprotocol/inspector).
+
+1. Run the Inspector (no install required):
+
+   ```bash
+   npx @modelcontextprotocol/inspector
+   ```
+
+   This opens the Inspector UI in your browser.
+
+2. In the Inspector UI, set:
+   - **Transport Type**: `Streamable HTTP`
+   - **URL**: `https://<your-deployment>.vercel.app/api/mcp`
+
+   (When testing locally with `vercel dev`, use `http://localhost:3000/api/mcp`.)
+
+3. Click **Connect**, then open the **Tools** tab and click **List Tools**. You
+   should see all nine tools (`get_historical_stock_prices`, `get_stock_info`,
+   `get_yahoo_finance_news`, `get_stock_actions`, `get_financial_statement`,
+   `get_holder_info`, `get_option_expiration_dates`, `get_option_chain`,
+   `get_recommendations`). Select one (e.g. `get_stock_info` with
+   `ticker = AAPL`) and click **Run Tool** to verify a response.
+
+You can also smoke-test the endpoint from the command line:
+
+```bash
+curl -X POST https://<your-deployment>.vercel.app/api/mcp \
+  -H "Content-Type: application/json" \
+  -H "Accept: application/json, text/event-stream" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+```
+
 ## Usage
 
 ### Quick Start
